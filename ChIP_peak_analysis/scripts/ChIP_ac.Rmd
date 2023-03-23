@@ -1,0 +1,412 @@
+---
+title: "explore_H3K27ac"
+author: "KN"
+date: "12/7/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+```{r setup2}
+
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(gridExtra)
+```
+
+
+
+```{r data}
+
+peaks_rel <- read.table("H3K27ac.consensus_peaks.boolean.annotatePeaks.txt", header=T, sep = "\t")
+
+
+peaks_rel <- peaks_rel %>%
+    mutate(Feature=gsub( " .*$", "", Annotation ))
+
+
+peaks_rel$Annotation_new <- gsub(pattern = "\\)", "", x=peaks_rel$Annotation)
+peaks_rel$Annotation_new <- gsub(pattern = "\\(", "", x=peaks_rel$Annotation_new)
+
+annot.df <- as.data.frame(do.call("rbind", strsplit(peaks_rel$Annotation_new, " ")))[,c(1,2,4,6)]
+colnames(annot.df) <- c("feat", "gene", "pos_number", "tot_exon_intr" )
+
+peaks_rel <- cbind(peaks_rel, annot.df)
+
+peaks_rel <- peaks_rel %>%
+  dplyr::filter(num_samples > 2)
+
+peaks_rel %>%
+  group_by(feat) %>%
+  count()
+
+length(peaks_rel$chr)
+
+
+
+peak_value <- read.table("../V0_acvsV1_ac.deseq2.results.txt", header = T)
+
+peak_value %>%
+  ggplot() +
+  geom_histogram(aes(baseMean), bins = 1000) +
+  scale_x_continuous(limits = c(0,100))
+
+
+chip_df <- peak_value
+
+chip_genes <- peaks_rel[,c(1:5, 32:35)] 
+
+chip_genes <- left_join(chip_genes, chip_df,  by=c("interval_id"="Geneid", "chr"="Chr"))
+
+length(chip_genes$chr)
+
+
+```
+
+```{r limma_voom_peaks}
+#limma voom?
+#https://ucdavis-bioinformatics-training.github.io/2018-June-RNA-Seq-Workshop/thursday/DE.html
+#BiocManager::install("edgeR")
+
+
+library(edgeR)
+
+#read in the data (tab delim counts)
+#chip_df <- read.table("../V0_acvsV1_ac.deseq2.results.txt", header = T)
+
+
+counts <- chip_genes[,c(20:23)]
+rownames(counts) <- chip_genes[,4]
+counts
+
+#Create DGEList object
+
+d0 <- DGEList(counts)
+
+#2. Preprocessing
+
+#Calculate normalization factors
+
+d0 <- calcNormFactors(d0)
+d0
+
+#Note: calcNormFactors doesn’t normalize the data, it just calculates normalization factors for use downstream.
+
+#Filter low-expressed genes
+
+cutoff <- 1
+drop <- which(apply(cpm(d0), 1, max) < cutoff)
+#d <- d0[-drop,] 
+#no <1
+d <- d0
+dim(d) # number of genes left
+
+
+#Create a new variable “group” that combines cultivar and time
+group <- c("V0", "V0", "V1", "V1")
+
+#Multidimensional scaling (MDS) plot
+plotMDS(d, col = as.numeric(group))
+
+#3. Voom transformation and calculation of variance weights
+
+#Specify the model to be fitted. We do this before using voom since voom uses variances of the model residuals (observed - fitted)
+
+mm <- model.matrix(~0 + group)
+
+#The above specifies a model where each coefficient corresponds to a group mean
+
+#Voom
+
+y <- voom(d, mm, plot = T)
+```
+
+```{r lm_peaks_relaxed}
+
+
+#4. Fitting linear models in limma
+
+#lmFit fits a linear model using weighted least squares for each gene:
+
+fit <- lmFit(y, mm)
+head(coef(fit))
+
+#Comparisons between groups (log fold-changes) are obtained as contrasts of these fitted linear models:
+
+#Specify which groups to compare:
+
+
+contr <- makeContrasts(groupV0 - groupV1, levels = colnames(coef(fit)))
+contr
+
+#Estimate contrast for each gene
+
+tmp <- contrasts.fit(fit, contr)
+
+#Empirical Bayes smoothing of standard errors (shrinks standard errors that are much larger or smaller than those from other genes towards the average standard error) (see https://www.degruyter.com/doi/10.2202/1544-6115.1027)
+
+tmp <- eBayes(tmp)
+
+#What genes are most differentially expressed?
+
+top.table <- topTable(tmp, sort.by = "P", n = Inf)
+head(top.table, 20)
+
+top.table$sign <- 0
+top.table[top.table$adj.P.Val<0.05, "sign"] <- 1
+#top.table[top.table$logFC<1, "sign"] <- 0
+top.table$sign <- as.factor(top.table$sign)
+
+write.table(top.table[top.table$sign==1,], file = "../figures_ms/h3k27ac_lv_peaks_relaxed_3")
+
+ggplot(top.table, aes(AveExpr, logFC)) +
+  geom_point(aes(colour=sign),alpha=0.5)
+
+ggplot(top.table, aes(logFC)) +
+  geom_histogram(binwidth = 0.01)
+
+
+ggplot(top.table, aes(logFC,-1*log10(top.table$adj.P.Val) )) +
+  geom_point(aes(colour=sign),alpha=0.5)
+
+ggplot(top.table, aes(logFC,-1*log10(top.table$P.Value) )) +
+  geom_point(aes(colour=sign),alpha=0.5)
+
+ggplot(top.table, aes(logFC,-1*log10(P.Value) )) +
+  geom_point(aes(colour=sign, alpha=sign)) +
+  scale_color_manual(values = c("dark grey", "red"),
+                     labels = c("adj.p-value > 0.05", "adj.p-value < 0.05"), 
+                     name = "") +
+  scale_alpha_manual(values = c(0.5, 0.9),
+                     guide="none") +
+  scale_y_continuous(name = "-1*log10(p-value)") +
+  theme_classic(list_interval_genename, ())
+
+ggsave("../figures_ms/vulc_plot_ac_lv_peaks_relaxed_3.pdf", device = "pdf", height = 4, width = 6)
+
+#get list genesymbols
+list_interval_genename <- read.table("list_interval_genename.txt", header = T)
+
+#exclude SLC
+list_interval_genename <- list_interval_genename[1:9,]
+
+ggplot(top.table, aes(logFC,-1*log10(P.Value) )) +
+  geom_point(aes(colour=sign, alpha=sign)) +
+  scale_color_manual(values = c("dark grey", "red"),
+                     labels = c("Adj.p-value > 0.05", "Adj.p-value < 0.05"), 
+                     name = "") +
+  scale_alpha_manual(values = c(0.5, 0.9),
+                     guide="none") +
+  scale_y_continuous(name = "-1*log10(p-value)") +
+  geom_text(data = list_interval_genename, aes(label=Gene_symbol, logFC, -1*log10(P.Value)), fontface="italic", nudge_x = 0.03, hjust="left", size = 12/2.8) +
+  theme_classic() +
+  theme(axis.text = element_text(size = 12, colour = "black"),
+        legend.text = element_text(size = 12),
+        axis.title = element_text(size = 12, colour = "black"))
+
+ggplot(top.table, aes(logFC,-1*log10(P.Value) )) +
+  geom_point(aes(colour=sign, alpha=sign)) +
+  scale_color_manual(values = c("dark grey", "red"),
+                     labels = c("Adj.p-value > 0.05", "Adj.p-value < 0.05"), 
+                     name = "") +
+  scale_alpha_manual(values = c(0.5, 0.9),
+                     guide="none") +
+  scale_y_continuous(name = "-1*log10(p-value)") +
+  geom_label(data = list_interval_genename, aes(label=Gene_symbol, logFC, -1*log10(P.Value)), fontface="italic", nudge_x = 0.03, hjust="left", size = 12/2.8) +
+  theme_classic() +
+  theme(axis.text = element_text(size = 12, colour = "black"),
+        legend.text = element_text(size = 12),
+        axis.title = element_text(size = 12, colour = "black"))
+
+ggsave("vulc_plot_ac_lv_peaks_ms.pdf", device = "pdf", height = 6, width = 9)
+
+top.table[top.table$adj.P.Val<0.05, ]
+```
+
+
+```{bash}
+
+cut -f1 -d " " h3k27ac_lv_peaks |sed 's/"//g' >  h3k27ac_lv_peaks_int_filt
+
+grep -f  h3k27ac_lv_peaks_int_filt ../H3K27ac.consensus_peaks.annotatePeaks.txt | awk 'FS=OFS="\t"{print $2, $8, $10, $11}'
+
+grep -A1 "Vcard_DToL14308" ../../Vanessa_cardui.fa > lv_ac_Vcard_DToL14308.fa
+
+```
+
+
+```{r get_intersect_data}
+
+
+chip_df <- read.table("../V0_acvsV1_ac.deseq2.results.txt", header = T)
+
+chip_genes <- read.table("../H3K27ac.consensus_peaks.annotatePeaks.txt", sep = "\t")
+
+chip_genes <- chip_genes[,1:11]
+
+chip_genes <- inner_join(chip_df, chip_genes, by=c("Geneid"="V1", "Chr"="V2"))
+
+
+#output from bedtools intersect only ac peaks overlapping m3 peaks
+chip_df_inter <- read.table("../intersect_ac_m3_consensus_peaks_uniq.bed")
+
+chip_df_inter <- left_join(chip_df_inter[,c(1,4)], chip_genes, by=c("V4"="Geneid"))
+
+chip_df_inter$V10 <- as.numeric(chip_df_inter$V10)
+
+cor.test(chip_df_inter$V0_ac_R1.raw, chip_df_inter$V0_ac_R2.raw)
+cor.test(chip_df_inter$V0_ac_R1.raw, chip_df_inter$V1_ac_R1.raw)
+cor.test(chip_df_inter$V0_ac_R1.raw, chip_df_inter$V1_ac_R2.raw)
+cor.test(chip_df_inter$V0_ac_R2.raw, chip_df_inter$V1_ac_R1.raw)
+cor.test(chip_df_inter$V0_ac_R2.raw, chip_df_inter$V1_ac_R2.raw)
+cor.test(chip_df_inter$V1_ac_R1.raw, chip_df_inter$V1_ac_R2.raw)
+
+
+```
+
+```{r limma_voom_peaks_inter}
+#limma voom?
+#https://ucdavis-bioinformatics-training.github.io/2018-June-RNA-Seq-Workshop/thursday/DE.html
+#BiocManager::install("edgeR")
+
+
+#library(edgeR)
+
+#read in the data (tab delim counts)
+#chip_df <- read.table("../V0_acvsV1_ac.deseq2.results.txt", header = T)
+
+
+counts <- chip_df_inter[,c(14:17)]
+rownames(counts) <- chip_df_inter[,2]
+counts
+
+#Create DGEList object
+
+d0 <- DGEList(counts)
+
+#2. Preprocessing
+
+#Calculate normalization factors
+
+d0 <- calcNormFactors(d0)
+d0
+
+#Note: calcNormFactors doesn’t normalize the data, it just calculates normalization factors for use downstream.
+
+#Filter low-expressed genes
+
+cutoff <- 1
+drop <- which(apply(cpm(d0), 1, max) < cutoff)
+#d <- d0[-drop,] 
+#no <1
+d <- d0
+dim(d) # number of genes left
+
+
+#Create a new variable “group” that combines cultivar and time
+group <- c("V0", "V0", "V1", "V1")
+
+#Multidimensional scaling (MDS) plot
+plotMDS(d, col = as.numeric(group))
+
+#3. Voom transformation and calculation of variance weights
+
+#Specify the model to be fitted. We do this before using voom since voom uses variances of the model residuals (observed - fitted)
+
+mm <- model.matrix(~0 + group)
+
+#The above specifies a model where each coefficient corresponds to a group mean
+
+#Voom
+
+y <- voom(d, mm, plot = T)
+```
+
+```{r lm_peaks_inter}
+
+#4. Fitting linear models in limma
+
+#lmFit fits a linear model using weighted least squares for each gene:
+
+fit <- lmFit(y, mm)
+head(coef(fit))
+
+#Comparisons between groups (log fold-changes) are obtained as contrasts of these fitted linear models:
+
+#Specify which groups to compare:
+
+
+contr <- makeContrasts(groupV0 - groupV1, levels = colnames(coef(fit)))
+contr
+
+#Estimate contrast for each gene
+
+tmp <- contrasts.fit(fit, contr)
+
+#Empirical Bayes smoothing of standard errors (shrinks standard errors that are much larger or smaller than those from other genes towards the average standard error) (see https://www.degruyter.com/doi/10.2202/1544-6115.1027)
+
+tmp <- eBayes(tmp)
+
+#What genes are most differentially expressed?
+
+top.table <- topTable(tmp, sort.by = "P", n = Inf)
+head(top.table, 20)
+
+top.table$sign <- 0
+top.table[top.table$adj.P.Val<0.05, "sign"] <- 1
+#top.table[top.table$logFC<1, "sign"] <- 0
+top.table$sign <- as.factor(top.table$sign)
+
+write.table(top.table[top.table$sign==1,], file = "h3k27ac_lv_peaks_intersect")
+
+ggplot(top.table, aes(AveExpr, logFC)) +
+  geom_point(aes(colour=sign),alpha=0.5)
+
+ggplot(top.table, aes(logFC)) +
+  geom_histogram(binwidth = 0.01)
+
+
+ggplot(top.table, aes(logFC,-1*log10(top.table$adj.P.Val) )) +
+  geom_point(aes(colour=sign),alpha=0.5)
+
+ggplot(top.table, aes(logFC,-1*log10(top.table$P.Value) )) +
+  geom_point(aes(colour=sign),alpha=0.5)
+
+ggplot(top.table, aes(logFC,-1*log10(P.Value) )) +
+  geom_point(aes(colour=sign),alpha=0.5) +
+  scale_color_manual(values = c("dark grey", "red"),
+                     labels = c("adj.p-value > 0.05", "adj.p-value < 0.05"), 
+                     name = "") +
+  scale_y_continuous(name = "-1*log10(p-value)") +
+  theme_classic()
+
+ggsave("vulc_plot_ac_lv_peaks_intersect.pdf", device = "pdf", height = 4, width = 6)
+
+top.table[top.table$adj.P.Val<0.05, ]
+```
+
+```{bash_inter}
+
+cut -f1 -d " " h3k27ac_lv_peaks_intersect |sed 's/"//g' >  h3k27ac_lv_peaks_intersect_int
+
+grep -f  h3k27ac_lv_peaks_intersect_int ../H3K27ac.consensus_peaks.annotatePeaks.txt | awk 'FS=OFS="\t"{print $2, $8, $10, $11}'
+
+grep "Interval_57270" ../H3K27ac.consensus_peaks.annotatePeaks.txt
+grep -f  results/vcard_r/h3k27ac_lv_peaks_intersect_int results/H3K27ac.consensus_peaks.annotatePeaks.txt | awk 'FS=OFS="\t"{print $2, $8, $10, $11}' > results/vcard_r/h3k27ac_lv_peaks_int_genes_intersect
+
+grep -f  results/vcard_r/h3k27ac_lv_peaks_intersect_int results/H3K27ac.consensus_peaks.annotatePeaks.txt | awk 'FS=OFS="\t"{print $11}' > results/vcard_r/h3k27ac_lv_peaks_int_genenames_intersect
+
+grep -A1 "Vcard_DToL11162" ../../Vanessa_cardui.fa > lv_ac_interseq_over_20kb.fa
+
+#result intersect sign genes get fasta
+grep -A1 -f results/vcard_r/h3k27ac_lv_peaks_int_genenames_intersect_corr Vanessa_cardui.fa > results/vcard_r/h3k27ac_lv_peaks_int_genenames_intersect_corr_proteins.fa
+
+```
+
+

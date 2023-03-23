@@ -1,0 +1,234 @@
+---
+title: "explore_H3K4me3"
+author: "KN"
+date: "12/7/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+```{r setup2}
+
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(gridExtra)
+```
+
+```{r data}
+peaks <- read.table("H3K4m3.consensus_peaks.boolean.annotatePeaks.txt", header=T, sep = "\t")
+
+
+peaks <- peaks %>%
+    mutate(Feature=gsub( " .*$", "", Annotation ))
+
+
+peaks$Annotation_new <- gsub(pattern = "\\)", "", x=peaks$Annotation)
+peaks$Annotation_new <- gsub(pattern = "\\(", "", x=peaks$Annotation_new)
+
+annot.df <- as.data.frame(do.call("rbind", strsplit(peaks$Annotation_new, " ")))[,c(1,2,4,6)]
+colnames(annot.df) <- c("feat", "gene", "pos_number", "tot_exon_intr" )
+
+peaks <- cbind(peaks, annot.df)
+
+hist(as.numeric(peaks$V0_m3_R1.qval), breaks = 2000, xlim = c(0,10))
+hist(as.numeric(peaks$V0_m3_R2.qval), breaks = 2000, xlim = c(0,10))
+hist(as.numeric(peaks$V1_m3_R1.qval), breaks = 2000, xlim = c(0,10))
+hist(as.numeric(peaks$V1_m3_R2.qval), breaks = 2000, xlim = c(0,10))
+
+
+peaks <- 
+  peaks %>%
+  filter(num_samples  > 2)
+
+#for intersect with ac
+peaks_m3 <- 
+  peaks %>%
+  filter(num_samples  > 2)
+
+
+
+peaks %>%
+  group_by(feat) %>%
+  count()
+
+length(peaks$chr)
+
+
+
+peaks_2kb <- 
+peaks %>% 
+  filter(Distance.to.TSS < 2000) %>%
+  filter(Distance.to.TSS > -2000)
+
+peaks_2kb %>%
+  group_by(feat) %>%
+  count()
+
+length(peaks_2kb$chr)
+
+#write.table(peaks, file = "../figures_ms/H3K4m3_paeks_consensus_all.table", quote = F, row.names = F)
+#write.table(peaks_2kb, file = "../figures_ms/H3K4m3_paeks_consensus_2kb.table", quote = F, row.names = F)
+
+
+```
+
+
+
+```{r data_value}
+
+peak_value <- read.table("../V0_m3vsV1_m3.deseq2.results.txt", header = T)
+
+
+hist(as.numeric(peaks$V0_m3_R1.pval), breaks = 1000, xlim = c(0,10)) 
+hist(as.numeric(peaks$V0_m3_R1.qval), breaks = 1000, xlim = c(0,10)) 
+
+peak_value %>%
+  ggplot() +
+  geom_histogram(aes(baseMean), bins = 1000) +
+  scale_x_continuous(limits = c(0,100))
+
+
+
+```
+
+```{r}
+
+
+
+chip_df <- peak_value
+
+chip_genes <- peaks[,c(1:5, 32:35)]
+
+chip_genes <- left_join(chip_genes, chip_df,  by=c("interval_id"="Geneid", "chr"="Chr"))
+
+length(chip_genes$chr)
+
+
+```
+
+```{r limma_voom_peaks}
+#limma voom?
+#https://ucdavis-bioinformatics-training.github.io/2018-June-RNA-Seq-Workshop/thursday/DE.html
+#BiocManager::install("edgeR")
+
+
+library(edgeR)
+
+#read in the data (tab delim counts)
+#chip_df <- read.table("../V0_acvsV1_ac.deseq2.results.txt", header = T)
+
+
+counts <- chip_genes[,c(20:23)]
+rownames(counts) <- chip_genes[,4]
+counts
+
+#Create DGEList object
+
+d0 <- DGEList(counts)
+
+#2. Preprocessing
+
+#Calculate normalization factors
+
+d0 <- calcNormFactors(d0)
+d0
+
+#Note: calcNormFactors doesn’t normalize the data, it just calculates normalization factors for use downstream.
+
+#Filter low-expressed genes
+
+cutoff <- 1
+drop <- which(apply(cpm(d0), 1, max) < cutoff)
+#d <- d0[-drop,] 
+#no <1
+d <- d0
+dim(d) # number of genes left
+
+
+#Create a new variable “group” that combines cultivar and time
+group <- c("V0", "V0", "V1", "V1")
+
+#Multidimensional scaling (MDS) plot
+plotMDS(d, col = as.numeric(group))
+
+#3. Voom transformation and calculation of variance weights
+
+#Specify the model to be fitted. We do this before using voom since voom uses variances of the model residuals (observed - fitted)
+
+mm <- model.matrix(~0 + group)
+
+#The above specifies a model where each coefficient corresponds to a group mean
+
+#Voom
+
+y <- voom(d, mm, plot = T)
+```
+
+```{r lm_peaks}
+
+#4. Fitting linear models in limma
+
+#lmFit fits a linear model using weighted least squares for each gene:
+
+fit <- lmFit(y, mm)
+head(coef(fit))
+
+#Comparisons between groups (log fold-changes) are obtained as contrasts of these fitted linear models:
+
+#Specify which groups to compare:
+
+
+contr <- makeContrasts(groupV0 - groupV1, levels = colnames(coef(fit)))
+contr
+
+#Estimate contrast for each gene
+
+tmp <- contrasts.fit(fit, contr)
+
+#Empirical Bayes smoothing of standard errors (shrinks standard errors that are much larger or smaller than those from other genes towards the average standard error) (see https://www.degruyter.com/doi/10.2202/1544-6115.1027)
+
+tmp <- eBayes(tmp)
+
+#What genes are most differentially expressed?
+
+top.table <- topTable(tmp, sort.by = "P", n = Inf)
+head(top.table, 20)
+
+top.table$sign <- 0
+top.table[top.table$adj.P.Val<0.05, "sign"] <- 1
+#top.table[top.table$logFC<1, "sign"] <- 0
+top.table$sign <- as.factor(top.table$sign)
+
+write.table(top.table[top.table$sign==1,], file = "h3k4me3_lv_peaks")
+
+ggplot(top.table, aes(AveExpr, logFC)) +
+  geom_point(aes(colour=sign),alpha=0.5)
+
+ggplot(top.table, aes(logFC)) +
+  geom_histogram(binwidth = 0.01)
+
+
+ggplot(top.table, aes(logFC,-1*log10(top.table$adj.P.Val) )) +
+  geom_point(aes(colour=sign),alpha=0.5)
+
+ggplot(top.table, aes(logFC,-1*log10(top.table$P.Value) )) +
+  geom_point(aes(colour=sign),alpha=0.5)
+
+ggplot(top.table, aes(logFC,-1*log10(P.Value) )) +
+  geom_point(aes(colour=sign),alpha=0.5) +
+  scale_color_manual(values = c("dark grey", "red"),
+                     labels = c("adj.p-value > 0.05", "adj.p-value < 0.05"), 
+                     name = "") +
+  scale_y_continuous(name = "-1*log10(p-value)") +
+  theme_classic()
+
+ggsave("vulc_plot_m3_lv_peaks.pdf", device = "pdf", height = 4, width = 6)
+
+top.table[top.table$adj.P.Val<0.05, ]
+```

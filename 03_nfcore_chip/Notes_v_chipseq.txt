@@ -1,0 +1,91 @@
+#backup
+
+
+Run time 01:11:10
+
+Vcard_chip_seq_check_md5 
+Run time 04:04:39
+
+
+#tutorials
+https://hbctraining.github.io/Intro-to-ChIPseq/lessons/05_peak_calling_macs.html
+https://pypi.org/project/MACS2/
+https://www.bioconductor.org/help/course-materials/2016/CSAMA/lab-5-chipseq/Epigenetics.html
+
+#make design.csv
+
+ll ../../delivery05585/INBOX/P21511/P21511_1*/02-FASTQ/*/*R1* |awk 'BEGIN {FS="/"} {print $NF}' > list_fastq_files.txt
+
+
+
+cat design_vcard.csv 
+group,replicate,fastq_1,fastq_2,antibody,control
+V1_ac,1,./data/P21511_101_S26_L003_R1_001.fastq.gz,./data/P21511_101_S26_L003_R2_001.fastq.gz,H3K27ac,V1_INPUT
+V1_ac,2,./data/P21511_102_S27_L003_R1_001.fastq.gz,./data/P21511_102_S27_L003_R2_001.fastq.gz,H3K27ac,V1_INPUT
+V0_ac,1,./data/P21511_103_S28_L003_R1_001.fastq.gz,./data/P21511_103_S28_L003_R2_001.fastq.gz,H3K27ac,V0_INPUT
+V0_ac,2,./data/P21511_104_S29_L003_R1_001.fastq.gz,./data/P21511_104_S29_L003_R2_001.fastq.gz,H3K27ac,V0_INPUT
+V1_m3,1,./data/P21511_113_S38_L003_R1_001.fastq.gz,./data/P21511_113_S38_L003_R2_001.fastq.gz,H3K4m3,V1_INPUT
+V1_m3,2,./data/P21511_114_S39_L003_R1_001.fastq.gz,./data/P21511_114_S39_L003_R2_001.fastq.gz,H3K4m3,V1_INPUT
+V0_m3,1,./data/P21511_115_S40_L003_R1_001.fastq.gz,./data/P21511_115_S40_L003_R2_001.fastq.gz,H3K4m3,V0_INPUT
+V0_m3,2,./data/P21511_116_S41_L003_R1_001.fastq.gz,./data/P21511_116_S41_L003_R2_001.fastq.gz,H3K4m3,V0_INPUT
+V1_INPUT,1,./data/P21511_125_S50_L003_R1_001.fastq.gz,./data/P21511_125_S50_L003_R2_001.fastq.gz,,
+V1_INPUT,2,./data/P21511_126_S51_L003_R1_001.fastq.gz,./data/P21511_126_S51_L003_R2_001.fastq.gz,,
+V0_INPUT,1,./data/P21511_127_S52_L003_R1_001.fastq.gz,./data/P21511_127_S52_L003_R2_001.fastq.gz,,
+V0_INPUT,2,./data/P21511_128_S53_L003_R1_001.fastq.gz,./data/P21511_128_S53_L003_R2_001.fastq.gz,,
+
+#make soft link for fastq files
+ln -s /proj/uppstore2017185/b2014034/private/raw_data/Vanessa/Vcardui_ChipSeq/delivery05585/INBOX/P21511/P21511_*/02-FASTQ/*/*fastq.gz .
+
+
+#options for pipeline
+https://nf-co.re/chipseq/1.2.2/usage
+#NBIS drop-in
+Nextflow pipelines are on uppmax
+
+
+
+--fasta '[path to FASTA reference]'
+
+--gtf '[path to GTF file]' #need to convert gff to gtf
+
+--macs_gsize 0.42e9
+
+--clip_r1 10
+--clip_r2 10
+#the multiqc shows poor quality initially and diverging base content both at 5' end still and at 3'end after adapter removal
+
+    "clip_r1": 20,
+    "clip_r2": 20,
+    "three_prime_clip_r1": 10,
+    "three_prime_clip_r2": 10,
+#multiqc <0.1% adaptorseq, GC-content normal
+
+
+#Use AGAT (in singularity to convert gff to gtf
+
+singularity pull docker://quay.io/biocontainers/agat:0.8.1--pl5321hdfd78af_1
+singularity run agat_0.8.1--pl5321hdfd78af_1.sif
+
+Singularity> agat_convert_sp_gff2gtf.pl --gff /proj/uppstore2017185/b2014034_nobackup/Dasha/Vcardui_DToL_kNdS_Assembly/makerrun3.all.maker.rename.proteins.AED50.eAED50.long50.norepeatdomainwZF.noverlap.noW.gff -o ../vcard.gtf 
+
+wc -l /proj/uppstore2017185/b2014034_nobackup/Dasha/Vcardui_DToL_kNdS_Assembly/makerrun3.all.maker.rename.proteins.AED50.eAED50.long50.norepeatdomainwZF.noverlap.noW.gff
+194247
+
+wc -l ../vcard.gtf 
+195145 ../vcard.gtf
+
+Singularity> exit
+exit
+
+#Checking output in R
+#m3 and ac separately
+1) boolean output to check number of peaks and genomic distribution
+scripts/venn_diag_r.Rmd
+
+2) differential enrichment with limma voom (R-package)
+3) intersect all peaks from m3 with ac and repeat diff enrichment for ac
+/scripts/ChIP_ac.Rmd
+/scripts/ChIP_m3.Rmd
+
+
+#BLAST genes of interest
